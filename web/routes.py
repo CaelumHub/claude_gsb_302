@@ -17,6 +17,7 @@ from flask import Blueprint, current_app, jsonify, request
 
 from engine import new_id
 from engine.executor import TestExecutor
+from engine.assets import AssetError, substitute_env_vars
 
 api = Blueprint("api", __name__, url_prefix="/api")
 
@@ -55,6 +56,14 @@ def _defects():
 
 def _notify():
     return current_app.config["NOTIFY"]
+
+
+def _assets():
+    return current_app.config["ASSET_LIB"]
+
+
+def _expander():
+    return current_app.config["ASSET_EXPANDER"]
 
 
 def _payload() -> dict:
@@ -236,13 +245,20 @@ def delete_case(case_id: str):
 
 @api.post("/cases/<case_id>/run")
 def run_single_case(case_id: str):
-    """单条用例试跑（同步执行，立即返回结果）。"""
+    """单条用例试跑（同步执行，立即返回结果）。资产引用先展开。"""
     case = _store("cases").get(case_id)
     if case is None:
         return _err("用例不存在", 404)
     data = _payload()
     env_config = _env_mgr().to_executor_config(data.get("env_id")) if data.get("env_id") else {}
-    result = TestExecutor().execute_case(case, env_config,
+    try:
+        expanded = _expander().expand(
+            case.get("project_id"), case.get("steps") or [], annotate=False)
+        executable = dict(case)
+        executable["steps"] = expanded["steps"]
+    except AssetError as exc:
+        return _err(f"资产展开失败: {exc}")
+    result = TestExecutor().execute_case(executable, env_config,
                                          timeout=case.get("timeout", 60))
     return jsonify(result)
 
@@ -686,6 +702,190 @@ def test_integration(integration_id: str):
 @api.get("/projects/<project_id>/events")
 def list_events(project_id: str):
     return jsonify({"events": _notify().events(project_id)})
+
+
+# ---------------------------------------------------------------------------
+# 可复用资产库
+# ---------------------------------------------------------------------------
+
+@api.get("/projects/<project_id>/assets")
+def list_assets(project_id: str):
+    """资产列表：支持分类 / 标签 / 关键字筛选。"""
+    try:
+        rows = _assets().list(
+            project_id,
+            category=request.args.get("category") or None,
+            tag=request.args.get("tag") or None,
+            q=request.args.get("q") or None,
+        )
+    except AssetError as exc:
+        return _err(str(exc))
+    return jsonify({"assets": rows})
+
+
+@api.get("/projects/<project_id>/assets/brief")
+def brief_assets(project_id: str):
+    """轻量资产清单（用例编辑器插入引用用）。"""
+    return jsonify({"assets": _assets().brief(project_id)})
+
+
+@api.post("/projects/<project_id>/assets")
+def create_asset(project_id: str):
+    if _store("projects").get(project_id) is None:
+        return _err("项目不存在", 404)
+    try:
+        _assets().create(project_id, _payload())
+        return jsonify({"ok": True})
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.get("/projects/<project_id>/assets/<key>")
+def get_asset(project_id: str, key: str):
+    """资产详情 + 全部版本。"""
+    lib = _assets()
+    asset = lib.get_by_key(project_id, key)
+    if asset is None:
+        return _err("资产不存在", 404)
+    try:
+        versions = lib.list_versions(project_id, key)
+    except AssetError as exc:
+        return _err(str(exc))
+    latest = lib.get_version(asset.get("latest_version_id")) if asset.get("latest_version_id") else None
+    return jsonify({"asset": asset, "latest": latest, "versions": versions})
+
+
+@api.put("/projects/<project_id>/assets/<key>")
+def update_asset(project_id: str, key: str):
+    """修改资产元数据（名称 / 描述 / 标签）。"""
+    try:
+        updated = _assets().update_meta(project_id, key, _payload())
+    except AssetError as exc:
+        return _err(str(exc))
+    return jsonify(updated)
+
+
+@api.post("/projects/<project_id>/assets/<key>/versions")
+def publish_asset_version(project_id: str, key: str):
+    """发布新版本（旧版本不可变，latest 指针前移）。"""
+    try:
+        version = _assets().publish(project_id, key, _payload())
+    except AssetError as exc:
+        return _err(str(exc))
+    return jsonify(version)
+
+
+@api.delete("/projects/<project_id>/assets/<key>")
+def delete_asset(project_id: str, key: str):
+    try:
+        result = _assets().delete(project_id, key,
+                                  force=request.args.get("force") == "1")
+    except AssetError as exc:
+        return _err(str(exc), 409)
+    return jsonify(result)
+
+
+@api.get("/projects/<project_id>/assets/<key>/impact")
+def asset_impact(project_id: str, key: str):
+    """影响分析：最新版改动沿引用链扩散到的资产 / 用例 / 套件。"""
+    try:
+        return jsonify(_assets().impact(project_id, key))
+    except AssetError as exc:
+        return _err(str(exc), 404)
+
+
+@api.get("/projects/<project_id>/assets/<key>/references")
+def asset_references(project_id: str, key: str):
+    """直接引用方（任何版本引用都算，删除保护用）。"""
+    try:
+        return jsonify(_assets().references(project_id, key))
+    except AssetError as exc:
+        return _err(str(exc), 404)
+
+
+@api.get("/projects/<project_id>/assets/outdated")
+def assets_outdated(project_id: str):
+    """全项目的过期锁定引用一览（锁定版 < 最新版）。"""
+    return jsonify(_assets().outdated(project_id))
+
+
+@api.post("/projects/<project_id>/assets/batch-upgrade")
+def assets_batch_upgrade(project_id: str):
+    """批量升级锁定引用：用例直接改写，资产以发布新版本落地。"""
+    data = _payload()
+    try:
+        return jsonify(_assets().batch_upgrade(project_id, data.get("targets")))
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.post("/projects/<project_id>/assets/preview")
+def assets_preview(project_id: str):
+    """预览：展开任意 steps（或某资产版本），可选按环境变量替换。
+
+    请求体：``{"steps": [...], "env_id": "...", "annotate": true}``
+    或 ``{"asset": "key", "version": "2"}``。
+    """
+    data = _payload()
+    lib, expander = _assets(), _expander()
+    env_vars: dict = {}
+    if data.get("env_id"):
+        env = _env_mgr().get(data["env_id"])
+        if env is not None:
+            env_vars = env.get("variables") or {}
+    try:
+        root = None
+        if data.get("asset"):
+            version = lib.resolve(project_id, data["asset"], data.get("version"))
+            root = {"key": version["key"], "name": version["name"],
+                    "version": version["version"], "version_id": version["id"],
+                    "category": version["category"]}
+            if version["category"] == "variables":
+                seed = [{"action": "set", "key": k, "value": v}
+                        for k, v in (version.get("variables") or {}).items()]
+            else:
+                seed = list(version.get("steps") or [])
+            if data.get("annotate", True):
+                for step in seed:
+                    if isinstance(step, dict):
+                        step["_origin"] = [root]
+        else:
+            seed = data.get("steps") or []
+        expanded = expander.expand(project_id, seed,
+                                   annotate=data.get("annotate", True))
+    except AssetError as exc:
+        return _err(str(exc))
+
+    used = expanded["used"]
+    if root is not None:
+        used = [root] + [u for u in used if u["version_id"] != root["version_id"]]
+
+    missing: set = set()
+    env_steps = []
+    if data.get("apply_env", True) and env_vars is not None:
+        for step in expanded["steps"]:
+            env_steps.append(_map_step_env(step, env_vars, missing))
+    else:
+        env_steps = expanded["steps"]
+    return jsonify({
+        "steps": env_steps,
+        "raw_steps": expanded["steps"],
+        "used": used,
+        "env_id": data.get("env_id"),
+        "env_variables": env_vars,
+        "missing_env": sorted(missing | set(expanded["missing_env"])),
+    })
+
+
+def _map_step_env(value, env_vars, missing):
+    """递归对展开后步骤里的字符串做环境变量展示替换。"""
+    if isinstance(value, str):
+        return substitute_env_vars(value, env_vars, missing)
+    if isinstance(value, dict):
+        return {k: _map_step_env(v, env_vars, missing) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_map_step_env(v, env_vars, missing) for v in value]
+    return value
 
 
 # ---------------------------------------------------------------------------

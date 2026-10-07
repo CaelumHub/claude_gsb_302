@@ -26,6 +26,7 @@ from typing import Optional
 
 from .cron import cron_matches, parse_cron
 from .models import new_id
+from .assets import AssetError, AssetExpander
 
 
 class Scheduler:
@@ -43,6 +44,9 @@ class Scheduler:
         self.coverage = coverage_analyzer
         self.defects = defect_manager
         self.notify = notify_manager
+
+        # 用例步骤里的「引用资产」在执行前递归展开为具体步骤
+        self.expander = AssetExpander(registry)
 
         self.max_build_workers = max_build_workers
         self.max_case_workers = max_case_workers
@@ -163,7 +167,7 @@ class Scheduler:
                         break
                     futures[pool.submit(
                         self._run_one, case, env_config, env_id, i,
-                        cancel_event)] = case
+                        project_id, cancel_event)] = case
 
                 for future in as_completed(futures):
                     case = futures[future]
@@ -219,9 +223,33 @@ class Scheduler:
             self._running.pop(build_id, None)
 
     def _run_one(self, case: dict, env_config: dict, env_id: str,
-                 index: int, cancel_event: threading.Event) -> dict:
+                 index: int, project_id: str,
+                 cancel_event: threading.Event) -> dict:
+        # 引用资产的用例：先按版本递归展开成具体步骤再执行。
+        # 资产缺失 / 版本不存在 / 循环引用等问题展开期就会暴露，
+        # 作为用例级 error 结果落库，而不是让整场构建崩掉。
+        executable = case
+        try:
+            expanded = self.expander.expand(
+                project_id, case.get("steps") or [], annotate=False)
+            executable = dict(case)
+            executable["steps"] = expanded["steps"]
+        except AssetError as exc:
+            return {
+                "case_id": case.get("id"),
+                "case_name": case.get("name", "未命名用例"),
+                "group": (case.get("tags") or ["默认"])[0],
+                "priority": case.get("priority", "P3"),
+                "status": "error",
+                "duration": 0.0,
+                "steps": [],
+                "assertions": [],
+                "logs": [f"资产展开失败: {exc}"],
+                "env_id": env_id,
+                "order": index,
+            }
         result = self.executor.execute_case(
-            case, env_config, cancel_event=cancel_event,
+            executable, env_config, cancel_event=cancel_event,
             timeout=case.get("timeout", 60))
         result["env_id"] = env_id
         result["order"] = index

@@ -5,6 +5,7 @@
 const PAGES = [
   { file: "projects.html",    name: "项目管理",     desc: "项目总览" },
   { file: "cases.html",       name: "测试用例",     desc: "步骤与断言" },
+  { file: "assets.html",      name: "资产库",       desc: "可复用片段与版本" },
   { file: "suites.html",      name: "套件与分组",   desc: "组织用例" },
   { file: "monitor.html",     name: "执行监控",     desc: "实时日志状态" },
   { file: "reports.html",     name: "测试报告",     desc: "通过率耗时" },
@@ -16,7 +17,8 @@ const PAGES = [
 ];
 
 const PAGE_NAMES = {
-  projects: "项目管理", cases: "测试用例", suites: "测试套件与分组",
+  projects: "项目管理", cases: "测试用例", assets: "可复用资产库",
+  suites: "测试套件与分组",
   monitor: "执行监控", reports: "测试报告", coverage: "代码覆盖率",
   defects: "缺陷跟踪", environments: "环境管理", schedules: "定时任务与触发",
   notifications: "通知与集成",

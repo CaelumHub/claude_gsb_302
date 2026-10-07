@@ -21,7 +21,7 @@ if BASE_DIR not in sys.path:
 
 from engine import (Scheduler, TestExecutor, EnvironmentManager,          # noqa: E402
                     CoverageAnalyzer, ReportGenerator, DefectManager,
-                    NotificationManager)
+                    NotificationManager, AssetLibrary, AssetExpander)
 from storage import StoreRegistry, BuildStoreRegistry                       # noqa: E402
 from web import api                                                         # noqa: E402
 from web.seed import seed_demo_data                                         # noqa: E402
@@ -41,6 +41,8 @@ def create_app(data_root: str | None = None) -> Flask:
     # -- 引擎层 -----------------------------------------------------------
     executor = TestExecutor()
     env_manager = EnvironmentManager(registry, data_root)
+    asset_lib = AssetLibrary(registry)
+    expander = AssetExpander(registry)
     coverage = CoverageAnalyzer(build_registry)
     report_gen = ReportGenerator(build_registry)
     defects = DefectManager(registry)
@@ -57,6 +59,8 @@ def create_app(data_root: str | None = None) -> Flask:
     app.config["BUILD_REGISTRY"] = build_registry
     app.config["SCHEDULER"] = scheduler
     app.config["ENV_MANAGER"] = env_manager
+    app.config["ASSET_LIB"] = asset_lib
+    app.config["ASSET_EXPANDER"] = expander
     app.config["COVERAGE"] = coverage
     app.config["REPORT_GEN"] = report_gen
     app.config["DEFECTS"] = defects

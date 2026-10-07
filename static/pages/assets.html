@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>资产库 - 自动化测试与持续集成平台</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    .asset-list { max-height: 720px; overflow: auto; }
+    .asset-item { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+      cursor: pointer; transition: all .12s; }
+    .asset-item:hover { border-color: var(--primary); }
+    .asset-item.active { border-color: var(--primary); background: var(--primary-soft); }
+    .asset-item .aname { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .asset-item .ameta { font-size: 12px; color: var(--text-muted); margin-top: 4px; }
+    .cat-step_flow { background: var(--primary-soft); color: var(--blue); }
+    .cat-assertion { background: #fef3e2; color: var(--amber); }
+    .cat-variables { background: #f3e8ff; color: var(--violet); }
+    .ver-line { display: flex; align-items: center; gap: 8px; padding: 7px 10px; border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 6px; font-size: 13px; }
+    .ver-line.current { border-color: var(--primary); background: var(--primary-soft); }
+    .step-json { width: 100%; min-height: 150px; font-family: var(--mono); font-size: 12.5px; }
+    .mini-step { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 6px; font-size: 12.5px; }
+    .mini-step .origin { font-size: 11px; color: var(--violet); margin-top: 4px; }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 12px; }
+    .tabs button { background: none; border: none; padding: 8px 14px; cursor: pointer; font-size: 13.5px;
+      color: var(--text-muted); border-bottom: 2px solid transparent; }
+    .tabs button.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .pane { display: none; } .pane.active { display: block; }
+    .impact-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 10px; }
+    .kv-line { font-family: var(--mono); font-size: 12px; color: var(--text-muted); margin: 2px 0; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="site-sidebar"></aside>
+
+  <main class="main">
+    <h1 class="page-title">资产库</h1>
+    <p class="page-desc">把操作步骤、断言片段、变量模板抽成可复用资产：分类组织、版本管理、多层引用，
+      用例引用资产而不是内联重复内容；支持影响分析、锁定/跟随版本、按环境预览。</p>
+
+    <div class="card">
+      <div class="row">
+        <label style="margin:0 6px 0 0;align-self:center">项目</label>
+        <select id="project-select" style="max-width:240px" onchange="switchProject(this.value)"></select>
+        <input type="text" id="q" placeholder="搜索名称 / key / 描述" style="max-width:200px" oninput="loadAssets()">
+        <select id="cat-filter" onchange="loadAssets()">
+          <option value="">全部分类</option>
+          <option value="step_flow">操作步骤流</option>
+          <option value="assertion">断言片段</option>
+          <option value="variables">变量模板</option>
+        </select>
+        <input type="text" id="tag-filter" placeholder="标签" style="max-width:120px" oninput="loadAssets()">
+        <span style="flex:1"></span>
+        <button class="btn secondary" id="btn-outdated">过期引用 / 批量升级</button>
+        <button class="btn" id="btn-new">新建资产</button>
+      </div>
+    </div>
+
+    <div class="grid cols-2">
+      <!-- 资产列表 -->
+      <section class="card">
+        <h2>资产列表 <span class="muted" id="asset-count" style="font-weight:400"></span></h2>
+        <div class="asset-list" id="asset-list"><div class="empty">加载中…</div></div>
+      </section>
+
+      <!-- 编辑/详情区 -->
+      <section class="card">
+        <div class="row spread">
+          <h2 style="margin:0" id="editor-title">资产详情</h2>
+          <div class="row">
+            <button class="btn small" id="btn-save-meta" style="display:none">保存信息</button>
+            <button class="btn danger small" id="btn-delete" style="display:none">删除资产</button>
+          </div>
+        </div>
+
+        <div class="grid cols-2 mt">
+          <div><label>名称 *</label><input type="text" id="a-name"></div>
+          <div><label>Key（项目内唯一）</label><input type="text" id="a-key" placeholder="flow_login"></div>
+        </div>
+        <div class="mt"><label>描述</label><input type="text" id="a-desc"></div>
+        <div class="grid cols-2 mt">
+          <div><label>分类</label>
+            <select id="a-cat" disabled>
+              <option value="step_flow">操作步骤流</option>
+              <option value="assertion">断言片段</option>
+              <option value="variables">变量模板</option>
+            </select>
+            <small class="muted">分类创建后不可改；新版本在下方编辑发布</small>
+          </div>
+          <div><label>标签（逗号分隔）</label><input type="text" id="a-tags" placeholder="auth, common"></div>
+        </div>
+
+        <div class="tabs mt">
+          <button data-pane="edit" class="active" onclick="switchTab('edit')">版本 / 编辑</button>
+          <button data-pane="impact" onclick="switchTab('impact')">影响分析</button>
+          <button data-pane="preview" onclick="switchTab('preview')">按环境预览</button>
+        </div>
+
+        <!-- 版本与编辑 -->
+        <div class="pane active" id="pane-edit">
+          <label>历史版本（点击载入）</label>
+          <div id="ver-list" class="mt"></div>
+
+          <div class="grid cols-2 mt">
+            <div><label>新版本说明（changelog）</label>
+              <input type="text" id="a-changelog" placeholder="例如：v2 增加区域校验"></div>
+            <div><label id="ver-mode-label">编辑对象：待发布的新版本</label>
+              <select id="ver-source" onchange="onVerSource()">
+                <option value="new">在最新版基础上改 → 发布新版本</option>
+              </select></div>
+          </div>
+
+          <div id="editor-variables" class="mt" style="display:none">
+            <label>变量模板（JSON：变量名 → 值，值里可写 ${ENV_VAR} 形式的环境变量）</label>
+            <textarea id="e-variables" class="step-json"></textarea>
+          </div>
+
+          <div id="editor-steps" class="mt" style="display:none">
+            <div class="row">
+              <label style="margin:0">形参（JSON：参数名 → 默认表达式）</label>
+            </div>
+            <textarea id="e-params" class="step-json" style="min-height:60px"></textarea>
+            <label class="mt">步骤列表（JSON 数组；可用
+              <code>{"action":"use","asset":"key","version":"latest","params":{}}</code> 引用其他资产）</label>
+            <div class="row mt" style="gap:6px">
+              <button class="btn secondary small" onclick="insertSnippet('request')">+ 请求</button>
+              <button class="btn secondary small" onclick="insertSnippet('assert')">+ 断言</button>
+              <button class="btn secondary small" onclick="insertSnippet('set')">+ 赋值</button>
+              <button class="btn secondary small" onclick="insertSnippet('use')">+ 引用资产</button>
+            </div>
+            <textarea id="e-steps" class="step-json mt"></textarea>
+          </div>
+
+          <div class="row mt">
+            <button class="btn" id="btn-publish">发布新版本</button>
+            <span class="muted" style="font-size:12.5px">旧版本不可变；发布后引用 latest 的用例立即生效，锁定版本号的用例不受影响。</span>
+          </div>
+        </div>
+
+        <!-- 影响分析 -->
+        <div class="pane" id="pane-impact">
+          <div class="row mb">
+            <button class="btn secondary small" onclick="loadImpact()">重新分析</button>
+            <span class="muted" style="font-size:12.5px">改底层资产 → 影响沿引用链层层扩散到资产 / 用例 / 套件。</span>
+          </div>
+          <div id="impact-body"><div class="empty">选择一个资产后查看。</div></div>
+        </div>
+
+        <!-- 预览 -->
+        <div class="pane" id="pane-preview">
+          <div class="row mb">
+            <label style="margin:0">环境</label>
+            <select id="preview-env" style="max-width:220px"></select>
+            <label style="margin:0;font-weight:400;font-size:13px">
+              <input type="checkbox" id="preview-apply-env" checked style="width:auto"> 替换环境变量</label>
+            <button class="btn secondary small" onclick="loadPreview()">生成预览</button>
+          </div>
+          <div id="preview-used" class="mb"></div>
+          <div id="preview-body"><div class="empty">点击「生成预览」查看该资产展开后的完整步骤。</div></div>
+        </div>
+      </section>
+    </div>
+
+    <!-- 批量升级弹窗 -->
+    <div id="upgrade-modal" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,.45);z-index:50;
+      align-items:center;justify-content:center">
+      <div class="card" style="width:min(820px,92vw);max-height:84vh;overflow:auto">
+        <div class="row spread">
+          <h2 style="margin:0">过期锁定引用</h2>
+          <button class="btn secondary small" onclick="closeUpgrade()">关闭</button>
+        </div>
+        <p class="muted" style="font-size:13px">锁定版本号且落后于最新版的引用点。可逐条升级，或一键全部升到最新。
+          用例直接改写；资产版本不可变，对资产的升级会发布新版本。</p>
+        <div id="upgrade-body" class="mt"></div>
+        <div class="row mt">
+          <button class="btn" onclick="upgradeAll()">一键全部升级到最新</button>
+        </div>
+      </div>
+    </div>
+  </main>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script>
+renderNav("assets");
+
+const CATEGORY_LABELS = { step_flow: "操作步骤流", assertion: "断言片段", variables: "变量模板" };
+let projectId = null;
+let assets = [];
+let envs = [];
+let currentKey = null;
+let versions = [];
+let editingVersionSource = "new";  // new | vN
+
+async function init() {
+  const params = new URLSearchParams(location.search);
+  projectId = await fillProjectSelect($("#project-select"), params.get("project_id"));
+  await Promise.all([loadAssets(), loadEnvs()]);
+  resetEditor();
+}
+
+async function switchProject(id) {
+  projectId = id; currentKey = null;
+  await Promise.all([loadAssets(), loadEnvs()]);
+  resetEditor();
+}
+
+async function loadEnvs() {
+  if (!projectId) return;
+  const d = await api(`/api/projects/${projectId}/environments`);
+  envs = d.environments || [];
+  $("#preview-env").innerHTML = '<option value="">不选环境（保留 ${...}）</option>' +
+    envs.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
+}
+
+// ---------- 列表 ----------
+async function loadAssets() {
+  if (!projectId) return;
+  const qs = new URLSearchParams({
+    q: $("#q").value || "", category: $("#cat-filter").value || "",
+    tag: $("#tag-filter").value || "",
+  });
+  const d = await api(`/api/projects/${projectId}/assets?${qs}`);
+  assets = d.assets || [];
+  $("#asset-count").textContent = `（${assets.length}）`;
+  const host = $("#asset-list");
+  if (!assets.length) { host.innerHTML = '<div class="empty">暂无资产，点击「新建资产」。</div>'; return; }
+  host.innerHTML = assets.map(a => `
+    <div class="asset-item ${a.key === currentKey ? 'active' : ''}" onclick="loadAsset('${esc(a.key)}')">
+      <div class="aname">
+        <span class="badge ${a.category}">${esc(CATEGORY_LABELS[a.category] || a.category)}</span>
+        <span>${esc(a.name)}</span>
+      </div>
+      <div class="ameta mono">${esc(a.key)} · v${a.latest_version || 0} ·
+        ${(a.tags || []).map(t => `#${esc(t)}`).join(" ")}</div>
+    </div>`).join("");
+}
+
+// ---------- 编辑器状态 ----------
+function resetEditor() {
+  currentKey = null;
+  $("#editor-title").textContent = "新建资产";
+  $("#btn-delete").style.display = "none";
+  $("#btn-save-meta").style.display = "none";
+  $("#a-name").value = ""; $("#a-key").value = ""; $("#a-key").disabled = false;
+  $("#a-desc").value = ""; $("#a-tags").value = "";
+  $("#a-cat").value = "step_flow"; $("#a-cat").disabled = false;
+  $("#ver-list").innerHTML = '<div class="muted">新建后发布首个版本。</div>';
+  $("#ver-source").innerHTML = '<option value="new">在最新版基础上改 → 发布新版本</option>';
+  $("#a-changelog").value = "初始版本";
+  $("#e-params").value = JSON.stringify({}, null, 2);
+  $("#e-steps").value = JSON.stringify([
+    { action: "request", method: "GET", url: "/api/health", name: "请求" },
+  ], null, 2);
+  $("#e-variables").value = JSON.stringify({ REGION: "${REGION}" }, null, 2);
+  $("#btn-publish").textContent = "创建资产并发布 v1";
+  applyCategory("step_flow");
+  $("#impact-body").innerHTML = '<div class="empty">保存后可查看影响分析。</div>';
+  $("#preview-body").innerHTML = '<div class="empty">保存后可预览。</div>';
+  $("#preview-used").innerHTML = "";
+}
+
+function applyCategory(cat) {
+  $("#editor-variables").style.display = cat === "variables" ? "" : "none";
+  $("#editor-steps").style.display = cat === "variables" ? "none" : "";
+}
+
+$("#a-cat").onchange = () => applyCategory($("#a-cat").value);
+
+async function loadAsset(key) {
+  currentKey = key;
+  const d = await api(`/api/projects/${projectId}/assets/${encodeURIComponent(key)}`);
+  const a = d.asset; versions = d.versions || [];
+  $("#editor-title").textContent = "资产详情";
+  $("#btn-delete").style.display = "inline-flex";
+  $("#btn-save-meta").style.display = "inline-flex";
+  $("#a-name").value = a.name; $("#a-key").value = a.key; $("#a-key").disabled = true;
+  $("#a-desc").value = a.description || ""; $("#a-tags").value = (a.tags || []).join(", ");
+  $("#a-cat").value = a.category; $("#a-cat").disabled = true;
+  applyCategory(a.category);
+  await loadAssets();
+
+  $("#ver-list").innerHTML = versions.map(v => `
+    <div class="ver-line ${v.id === a.latest_version_id ? 'current' : ''}">
+      <strong>v${v.version}</strong>
+      <span class="muted">${esc(v.changelog || "")}</span>
+      <span style="flex:1"></span>
+      <span class="muted mono">${fmtTime(v.published_at)}</span>
+      <button class="btn secondary small" onclick="loadVersionIntoEditor(${v.version})">载入</button>
+    </div>`).join("");
+  $("#ver-source").innerHTML =
+    '<option value="new">在最新版基础上改 → 发布新版本</option>' +
+    versions.map(v => `<option value="v${v.version}">只读查看 v${v.version}</option>`).join("");
+  loadVersionIntoEditor((d.latest && d.latest.version) || null, true);
+  $("#btn-publish").textContent = `发布 v${(d.latest ? d.latest.version : 0) + 1}`;
+  loadImpact();
+  loadPreview();
+}
+
+function findVersion(n) { return versions.find(v => v.version === n); }
+
+function loadVersionIntoEditor(n, asBase) {
+  if (n == null) { editingVersionSource = "new"; return; }
+  const v = findVersion(n);
+  if (!v) return;
+  if (asBase) editingVersionSource = "new";
+  else { editingVersionSource = "v" + n; $("#ver-source").value = "v" + n; }
+  $("#e-params").value = JSON.stringify(v.params || {}, null, 2);
+  $("#e-steps").value = JSON.stringify(v.steps || [], null, 2);
+  $("#e-variables").value = JSON.stringify(v.variables || {}, null, 2);
+  $("#a-changelog").value = asBase ? "" : `（查看 v${n}，只读）`;
+  updatePublishButton();
+}
+
+function onVerSource() {
+  const val = $("#ver-source").value;
+  if (val === "new") {
+    const latest = versions[0];
+    if (latest) loadVersionIntoEditor(latest.version, true);
+  } else {
+    loadVersionIntoEditor(parseInt(val.slice(1), 10), false);
+  }
+}
+
+function updatePublishButton() {
+  const n = versions.length ? versions[0].version : 0;
+  $("#btn-publish").textContent = `发布 v${n + 1}`;
+  $("#btn-publish").disabled = editingVersionSource !== "new";
+  $("#btn-publish").title = editingVersionSource !== "new" ? "历史版本不可变，请切回「新版本」编辑" : "";
+}
+
+function insertSnippet(kind) {
+  let obj;
+  if (kind === "request") obj = { action: "request", method: "GET", url: "/api/x", save_as: "resp", name: "请求" };
+  else if (kind === "assert") obj = { action: "assert", type: "status", actual: "${resp.status}", expected: 200, name: "断言" };
+  else if (kind === "set") obj = { action: "set", key: "var", value: "1", name: "赋值" };
+  else obj = { action: "use", asset: "asset_key", version: "latest", params: {}, name: "引用资产" };
+  let arr;
+  try { arr = JSON.parse($("#e-steps").value || "[]"); } catch (_) { arr = []; }
+  arr.push(obj);
+  $("#e-steps").value = JSON.stringify(arr, null, 2);
+}
+
+// ---------- 保存 ----------
+function readContent() {
+  const cat = $("#a-cat").value;
+  let params = {};
+  try { params = JSON.parse($("#e-params").value || "{}"); }
+  catch (_) { throw new Error("形参不是合法 JSON"); }
+  if (cat === "variables") {
+    let variables;
+    try { variables = JSON.parse($("#e-variables").value || "{}"); }
+    catch (_) { throw new Error("变量模板不是合法 JSON"); }
+    return { params, variables };
+  }
+  let steps;
+  try { steps = JSON.parse($("#e-steps").value || "[]"); }
+  catch (_) { throw new Error("步骤列表不是合法 JSON"); }
+  return { params, steps };
+}
+
+$("#btn-save-meta").onclick = async () => {
+  if (!currentKey) return;
+  await api(`/api/projects/${projectId}/assets/${encodeURIComponent(currentKey)}`, {
+    method: "PUT",
+    body: {
+      name: $("#a-name").value.trim(), description: $("#a-desc").value,
+      tags: ($("#a-tags").value || "").split(",").map(t => t.trim()).filter(Boolean),
+    },
+  });
+  toast("资产信息已保存");
+  loadAssets();
+};
+
+$("#btn-publish").onclick = async () => {
+  let content;
+  try { content = readContent(); } catch (e) { return toast(e.message, "error"); }
+  const name = $("#a-name").value.trim();
+  if (!name) return toast("请输入资产名称", "error");
+  const body = { ...content, changelog: $("#a-changelog").value || "" };
+  try {
+    if (!currentKey) {
+      await api(`/api/projects/${projectId}/assets`, { method: "POST", body: {
+        name, key: $("#a-key").value.trim(), description: $("#a-desc").value,
+        category: $("#a-cat").value,
+        tags: ($("#a-tags").value || "").split(",").map(t => t.trim()).filter(Boolean),
+        ...body,
+      }});
+      toast("资产已创建并发布 v1");
+      await loadAssets();
+      const found = assets.find(a => a.name === name);
+      if (found) await loadAsset(found.key);
+    } else {
+      await api(`/api/projects/${projectId}/assets/${encodeURIComponent(currentKey)}/versions`,
+        { method: "POST", body });
+      toast("新版本已发布");
+      await loadAsset(currentKey);
+    }
+  } catch (e) { toast(e.message, "error"); }
+};
+
+$("#btn-delete").onclick = async () => {
+  if (!currentKey) return;
+  if (!confirm(`确认删除资产 ${currentKey} 及其全部版本？`)) return;
+  try {
+    await api(`/api/projects/${projectId}/assets/${encodeURIComponent(currentKey)}?force=0`,
+      { method: "DELETE" });
+    toast("已删除"); resetEditor(); loadAssets();
+  } catch (e) {
+    if (confirm(`${e.message}\n\n仍要强制删除吗？引用方在执行时会报错。`)) {
+      await api(`/api/projects/${projectId}/assets/${encodeURIComponent(currentKey)}?force=1`,
+        { method: "DELETE" });
+      toast("已强制删除"); resetEditor(); loadAssets();
+    }
+  }
+};
+
+// ---------- Tab ----------
+function switchTab(name) {
+  $$(".tabs button").forEach(b => b.classList.toggle("active", b.dataset.pane === name));
+  $$(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + name));
+  if (name === "impact") loadImpact();
+  if (name === "preview") loadPreview();
+}
+
+// ---------- 影响分析 ----------
+async function loadImpact() {
+  if (!currentKey) return;
+  const host = $("#impact-body");
+  host.innerHTML = '<div class="empty">分析中…</div>';
+  try {
+    const d = await api(`/api/projects/${projectId}/assets/${encodeURIComponent(currentKey)}/impact`);
+    host.innerHTML = renderImpact(d);
+  } catch (e) { host.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+function refPills(items) {
+  if (!items.length) return '<span class="muted">无</span>';
+  return items.map(x => `<span class="tag">${esc(x.name || x.asset || x.id)}</span>`).join(" ");
+}
+
+function renderImpact(d) {
+  const autoAssets = d.auto_assets || [];
+  const lockedAssets = d.locked_assets || [];
+  const autoCases = d.cases_auto || [];
+  const lockedCases = d.cases_locked || [];
+  const suites = d.suites || [];
+  return `
+  <div class="impact-box">
+    <strong>🟢 立即受影响的资产（跟随 latest，${autoAssets.length}）</strong>
+    <div class="mt">${refPills(autoAssets.map(a => ({ name: `${a.name} v${a.version}` })))}</div>
+  </div>
+  <div class="impact-box">
+    <strong>🟠 锁定旧版的资产（${lockedAssets.length}）</strong>
+    <div class="mt">${lockedAssets.length ? lockedAssets.map(a =>
+      `<div class="kv-line">${esc(a.name)} v${a.version} 锁定了 ${esc(a.target_asset)} v${a.pinned}</div>`).join("")
+      : '<span class="muted">无</span>'}</div>
+  </div>
+  <div class="impact-box">
+    <strong>🟢 立即受影响的用例（${autoCases.length}）</strong>
+    <div class="mt">${refPills(autoCases)}</div>
+  </div>
+  <div class="impact-box">
+    <strong>🟠 锁定旧版的用例（${lockedCases.length}）</strong>
+    <div class="mt">${lockedCases.length ? lockedCases.map(c =>
+      `<div class="kv-line">${esc(c.name)}：${(c.pinned || []).map(p => `${esc(p.asset)}@v${p.pinned}`).join(", ")}</div>`).join("")
+      : '<span class="muted">无</span>'}</div>
+  </div>
+  <div class="impact-box">
+    <strong>波及套件（${suites.length}）</strong>
+    <div class="mt">${suites.length ? suites.map(s =>
+      `<div class="kv-line">${esc(s.name)}：${(s.affected_cases || []).length} 条用例</div>`).join("")
+      : '<span class="muted">无</span>'}</div>
+  </div>`;
+}
+
+// ---------- 预览 ----------
+async function loadPreview() {
+  if (!currentKey) return;
+  const host = $("#preview-body");
+  host.innerHTML = '<div class="empty">生成中…</div>';
+  try {
+    const d = await api(`/api/projects/${projectId}/assets/preview`, { method: "POST", body: {
+      asset: currentKey, env_id: $("#preview-env").value || null,
+      apply_env: $("#preview-apply-env").checked, annotate: true,
+    }});
+    $("#preview-used").innerHTML =
+      `<span class="muted" style="font-size:12.5px">展开引用链：</span>` +
+      (d.used || []).map(u => `<span class="tag">${esc(u.name)} v${u.version}</span>`).join(" ") +
+      (d.missing_env && d.missing_env.length
+        ? `<div class="mt" style="font-size:12.5px;color:var(--amber)">⚠ 当前环境缺少变量：${d.missing_env.map(esc).join(", ")}</div>`
+        : "");
+    host.innerHTML = (d.steps || []).map(stepHtml).join("") || '<div class="empty">（变量模板已在下方列出）</div>';
+  } catch (e) { host.innerHTML = `<div class="empty">${esc(e.message)}</div>`; }
+}
+
+function stepHtml(s) {
+  const head = s.action === "assert"
+    ? `assert · ${esc(s.type || "")}`
+    : esc(s.action);
+  let detail = "";
+  if (s.action === "request") detail = `${esc(s.method || "GET")} ${esc(s.url || "")}`;
+  else if (s.action === "assert") detail = `${esc(JSON.stringify(s.actual))} == ${esc(JSON.stringify(s.expected))}`;
+  else if (s.action === "set") detail = `${esc(s.key)} = ${esc(JSON.stringify(s.value))}`;
+  else detail = esc(JSON.stringify(s));
+  const origin = (s._origin || []).map(o =>
+    `<span class="tag">${esc(o.name)} v${o.version}</span>`).join(" → ");
+  return `<div class="mini-step">
+    <div><span class="badge ${s.action}">${head}</span> <strong>${esc(s.name || "")}</strong></div>
+    <div class="kv-line mt">${detail}</div>
+    ${origin ? `<div class="origin">来源：${origin}</div>` : ""}
+  </div>`;
+}
+
+$("#preview-env").onchange = loadPreview;
+$("#preview-apply-env").onchange = loadPreview;
+
+// ---------- 过期 / 批量升级 ----------
+$("#btn-outdated").onclick = async () => {
+  $("#upgrade-modal").style.display = "flex";
+  await loadOutdated();
+};
+function closeUpgrade() { $("#upgrade-modal").style.display = "none"; }
+
+async function loadOutdated() {
+  const d = await api(`/api/projects/${projectId}/assets/outdated`);
+  const host = $("#upgrade-body");
+  if (!d.items.length) { host.innerHTML = '<div class="empty">没有过期的锁定引用 🎉</div>'; return; }
+  host.innerHTML = `<div class="mb muted" style="font-size:13px">共 ${d.count} 处过期引用，涉及 ${d.assets_affected} 个资产。</div>` +
+    `<table><thead><tr><th>引用方</th><th>资产</th><th>锁定</th><th>最新</th><th></th></tr></thead><tbody>` +
+    d.items.map((it, i) => `<tr>
+      <td>${esc(it.asset_name)} <span class="muted">(${it.ref_type === "case" ? "用例" : "资产版本"})</span></td>
+      <td class="mono">${esc(it.ref)}</td>
+      <td><span class="badge skipped">v${it.pinned}</span></td>
+      <td><span class="badge ok">v${it.latest}</span></td>
+      <td><button class="btn small secondary" onclick="upgradeOne(${i})">升级</button></td>
+    </tr>`).join("") + "</tbody></table>";
+  window._outdatedItems = d.items;
+}
+
+async function upgradeOne(i) {
+  const it = window._outdatedItems[i];
+  await api(`/api/projects/${projectId}/assets/batch-upgrade`, { method: "POST", body: {
+    targets: [{ ref_type: it.ref_type, id: it.id, asset: it.ref }],
+  }});
+  toast("已升级");
+  await loadOutdated();
+  if (currentKey) loadAsset(currentKey);
+}
+
+async function upgradeAll() {
+  if (!confirm("确认把项目内所有过期锁定引用升到最新版？资产引用会发布新版本。")) return;
+  const r = await api(`/api/projects/${projectId}/assets/batch-upgrade`,
+    { method: "POST", body: {} });
+  toast(`已升级 ${(r.updated_cases || []).length} 条用例、${(r.updated_versions || []).length} 个资产新版本`);
+  await loadOutdated();
+  await loadAssets();
+}
+
+$("#btn-new").onclick = () => { resetEditor(); };
+
+init();
+</script>
+</body>
+</html>

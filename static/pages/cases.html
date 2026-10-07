@@ -85,6 +85,7 @@
             <button class="btn secondary" onclick="addStep('set')">+ 赋值</button>
             <button class="btn secondary" onclick="addStep('script')">+ 脚本</button>
             <button class="btn secondary" onclick="addStep('sleep')">+ 等待</button>
+            <button class="btn secondary" onclick="addStep('use')">+ 引用资产</button>
           </div>
           <div id="step-list"><div class="muted">还没有步骤，从上方添加。</div></div>
         </div>
@@ -107,15 +108,29 @@ let projectId = null;
 let cases = [];
 let currentId = null;
 let steps = [];
+let assetBrief = [];
+
+async function loadAssetBrief() {
+  if (!projectId) return;
+  try {
+    const d = await api(`/api/projects/${projectId}/assets/brief`);
+    assetBrief = d.assets || [];
+  } catch (_) { assetBrief = []; }
+}
+
+function assetOptions(selected) {
+  if (!assetBrief.length) return '<option value="">（资产库为空）</option>';
+  return assetBrief.map(a => `<option value="${esc(a.key)}" ${a.key === selected ? "selected" : ""}>${esc(a.name)}（${esc(a.key)} · v${a.latest_version}）</option>`).join("");
+}
 
 // ---------- 项目 ----------
 async function init() {
   const params = new URLSearchParams(location.search);
   projectId = await fillProjectSelect($("#project-select"), params.get("project_id"));
-  await loadCases();
+  await Promise.all([loadCases(), loadAssetBrief()]);
 }
 
-async function switchProject(id) { projectId = id; currentId = null; steps = []; resetEditor(); await loadCases(); }
+async function switchProject(id) { projectId = id; currentId = null; steps = []; resetEditor(); await Promise.all([loadCases(), loadAssetBrief()]); }
 
 async function loadTags() {
   if (!projectId) return;
@@ -181,11 +196,16 @@ function addStep(action) {
   if (action === "script") Object.assign(base, { expr: "1 + 1", save_as: "result" });
   if (action === "sleep") Object.assign(base, { seconds: "0.1" });
   if (action === "skip") Object.assign(base, { message: "跳过" });
+  if (action === "use") Object.assign(base, {
+    asset: assetBrief[0] ? assetBrief[0].key : "", version: "latest", params: {} });
   steps.push(base);
   renderSteps();
 }
 
 function stepField(i, key, value) { steps[i][key] = value; }
+function stepParams(i, text) {
+  try { steps[i].params = JSON.parse(text || "{}"); } catch (_) { /* 编辑中，待序列化时再校验 */ steps[i]._paramsText = text; }
+}
 function stepType(i, action) {
   const name = steps[i].name;
   steps[i] = { action, name };
@@ -194,6 +214,8 @@ function stepType(i, action) {
   if (action === "set") Object.assign(steps[i], { key: "var", value: "1" });
   if (action === "script") Object.assign(steps[i], { expr: "1 + 1", save_as: "result" });
   if (action === "sleep") Object.assign(steps[i], { seconds: "0.1" });
+  if (action === "use") Object.assign(steps[i], {
+    asset: assetBrief[0] ? assetBrief[0].key : "", version: "latest", params: {} });
   renderSteps();
 }
 function removeStep(i) { steps.splice(i, 1); renderSteps(); }
@@ -212,7 +234,7 @@ function stepHTML(i, s) {
       <input type="text" value="${esc(s.name || a)}" placeholder="步骤名称"
         oninput="stepField(${i},'name',this.value)" style="max-width:180px">
       <select onchange="stepType(${i}, this.value)" style="max-width:120px">
-        ${["request","assert","set","script","sleep","skip"].map(t => `<option ${t===a?"selected":""}>${t}</option>`).join("")}
+        ${["request","assert","set","script","sleep","skip","use"].map(t => `<option ${t===a?"selected":""}>${t === "use" ? "use 引用资产" : t}</option>`).join("")}
       </select>
       <span style="flex:1"></span>
       <button class="btn secondary small" onclick="moveStep(${i},-1)">↑</button>
@@ -250,6 +272,23 @@ function stepHTML(i, s) {
     <div class="se-grid"><div><label>秒数</label><input type="text" value="${esc(s.seconds||"")}" oninput="stepField(${i},'seconds',this.value)"></div></div>`;
   else if (a === "skip") body = `
     <div class="se-grid"><div><label>说明</label><input type="text" value="${esc(s.message||"")}" oninput="stepField(${i},'message',this.value)"></div></div>`;
+  else if (a === "use") body = `
+    <div class="se-grid">
+      <div><label>资产</label><select onchange="stepField(${i},'asset',this.value)">${assetOptions(s.asset)}</select></div>
+      <div><label>版本</label>
+        <div class="row" style="gap:6px">
+          <select style="max-width:120px" onchange="stepField(${i},'version',this.value)">
+            <option value="latest" ${s.version==="latest"?"selected":""}>latest 跟随最新</option>
+            <option value="pinned" ${s.version&&s.version!=="latest"?"selected":""}>锁定版本号 ▸</option>
+          </select>
+          <input type="number" min="1" style="max-width:90px" placeholder="版本号"
+            value="${s.version && s.version!=="latest" ? esc(s.version) : ""}"
+            oninput="stepField(${i},'version',this.value)" ${s.version==="latest"?"disabled":""}>
+        </div>
+      </div>
+      <div><label>实参（JSON，可写环境变量 ${'$'}{ENV_VAR}）</label>
+        <input type="text" value="${esc(JSON.stringify(s.params||{}))}" oninput="stepParams(${i},this.value)" placeholder='{"username":"${USERNAME}"}'></div>
+    </div>`;
 
   return `<div class="step-editor">${head}${body}</div>`;
 }
@@ -272,6 +311,15 @@ function serializeSteps() {
     if (s.action === "script") Object.assign(out, { expr: s.expr || "", save_as: s.save_as || "" });
     if (s.action === "sleep") Object.assign(out, { seconds: parseFloat(s.seconds || "0.1") });
     if (s.action === "skip") Object.assign(out, { message: s.message || "跳过" });
+    if (s.action === "use") {
+      let params = s.params || {};
+      if (s._paramsText) { try { params = JSON.parse(s._paramsText); } catch (_) { /* 保留旧值 */ } }
+      Object.assign(out, {
+        asset: s.asset || "",
+        version: (s.version && s.version !== "pinned") ? String(s.version) : "latest",
+        params,
+      });
+    }
     return out;
   });
 }
