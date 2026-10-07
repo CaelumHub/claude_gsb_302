@@ -1,0 +1,582 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>资产库 - 自动化测试与持续集成平台</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+  <style>
+    .asset-list { max-height: 720px; overflow: auto; }
+    .asset-item { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px;
+      cursor: pointer; transition: all .12s; }
+    .asset-item:hover { border-color: var(--primary); }
+    .asset-item.active { border-color: var(--primary); background: var(--primary-soft); }
+    .asset-item .aname { font-weight: 600; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+    .asset-item .ameta { font-size: 12px; color: var(--text-muted); margin-top: 3px; }
+    .cat-step { background: #e0e7ff; color: #3730a3; }
+    .cat-assertion { background: #dcfce7; color: #166534; }
+    .cat-variables { background: #fef3c7; color: #92400e; }
+    .pin-follow { color: var(--green); font-weight: 600; }
+    .pin-lock { color: var(--amber); font-weight: 600; }
+    .step-btns { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+    .step-btns .btn { font-size: 12px; padding: 5px 11px; }
+    .se-head { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
+    .step-editor { border: 1px solid var(--border); border-radius: 8px; padding: 10px; margin-bottom: 8px; background: var(--surface-2); }
+    .se-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+    .se-grid label { font-size: 11px; margin-bottom: 2px; }
+    .ver-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border: 1px solid var(--border);
+      border-radius: 8px; margin-bottom: 6px; font-size: 13px; cursor: pointer; }
+    .ver-item:hover { border-color: var(--primary); }
+    .ver-item.active { border-color: var(--primary); background: var(--primary-soft); }
+    .ver-no { font-family: var(--mono); font-weight: 700; }
+    .ver-latest { background: var(--green); color: #fff; font-size: 11px; padding: 1px 7px; border-radius: 10px; }
+    .preview-steps { font-family: var(--mono); font-size: 12.5px; background: var(--surface-2); border-radius: 8px;
+      padding: 12px; max-height: 360px; overflow: auto; white-space: pre-wrap; }
+    .pv-step { padding: 3px 0 3px 14px; border-left: 2px solid var(--border); margin-left: 4px; }
+    .pv-asset { color: var(--violet); }
+    .var-chip { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--border); border-radius: 16px;
+      padding: 2px 10px; font-size: 12px; margin: 0 6px 6px 0; }
+    .var-chip .src-environment { color: var(--green); }
+    .var-chip .src-asset_default { color: var(--blue); }
+    .var-chip .src-undefined { color: var(--red); }
+    .impact-table td, .impact-table th { font-size: 13px; }
+    .tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin-bottom: 14px; }
+    .tabs .tab { padding: 8px 14px; cursor: pointer; font-size: 14px; color: var(--text-muted); border-bottom: 2px solid transparent; }
+    .tabs .tab.active { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+    .pane { display: none; } .pane.active { display: block; }
+  </style>
+</head>
+<body>
+<div class="layout">
+  <aside class="sidebar" id="site-sidebar"></aside>
+
+  <main class="main">
+    <h1 class="page-title">资产库</h1>
+    <p class="page-desc">把操作步骤、断言片段、变量模板沉淀为带版本的可复用资产；用例与资产引用资产，支持锁定旧版 / 跟随最新、影响分析、批量升级与按环境预览。</p>
+
+    <div class="card">
+      <div class="row">
+        <label style="margin:0 6px 0 0;align-self:center">项目</label>
+        <select id="project-select" style="max-width:260px" onchange="switchProject(this.value)"></select>
+        <input type="text" id="q" placeholder="搜索名称 / 描述 / 标签" style="max-width:200px" oninput="loadAssets()">
+        <select id="category-filter" style="max-width:150px" onchange="loadAssets()">
+          <option value="">全部分类</option>
+          <option value="step">操作步骤</option>
+          <option value="assertion">断言片段</option>
+          <option value="variables">变量模板</option>
+        </select>
+        <input type="text" id="tag-filter" placeholder="按标签筛选" style="max-width:130px" oninput="loadAssets()">
+        <button class="btn" id="btn-new">新建资产</button>
+      </div>
+    </div>
+
+    <div class="grid cols-2">
+      <!-- 资产列表 -->
+      <section class="card">
+        <h2>资产列表 <span class="muted" id="asset-count" style="font-weight:400"></span></h2>
+        <div class="asset-list" id="asset-list"><div class="empty">加载中…</div></div>
+      </section>
+
+      <!-- 详情区 -->
+      <section class="card">
+        <div class="row spread"><h2 style="margin:0" id="editor-title">资产详情</h2>
+          <div class="row" id="detail-actions" style="display:none">
+            <button class="btn secondary small" id="btn-save-meta">保存元信息</button>
+            <button class="btn small" id="btn-publish">发布新版本</button>
+            <button class="btn danger small" id="btn-delete">删除</button>
+          </div>
+        </div>
+
+        <div id="detail-empty" class="empty" style="margin-top:30px">从左侧选择资产，或点击「新建资产」。</div>
+
+        <div id="detail-body" style="display:none">
+          <div class="mt">
+            <label>资产名称 *</label>
+            <input type="text" id="a-name" placeholder="例如：标准登录流程">
+          </div>
+          <div class="mt"><label>描述</label>
+            <textarea id="a-desc" style="min-height:46px"></textarea></div>
+          <div class="grid cols-3 mt">
+            <div><label>分类</label>
+              <select id="a-category">
+                <option value="step">操作步骤</option>
+                <option value="assertion">断言片段</option>
+                <option value="variables">变量模板</option>
+              </select></div>
+            <div><label>标签（逗号分隔）</label><input type="text" id="a-tags" placeholder="auth, 公共"></div>
+            <div><label>最新版本</label><input type="text" id="a-latest" disabled style="background:var(--surface-2)"></div>
+          </div>
+
+          <div class="tabs mt" id="detail-tabs">
+            <div class="tab active" data-pane="content" onclick="switchTab('content')">内容 / 引用</div>
+            <div class="tab" data-pane="versions" onclick="switchTab('versions')">版本历史</div>
+            <div class="tab" data-pane="preview" onclick="switchTab('preview')">按环境预览</div>
+            <div class="tab" data-pane="impact" onclick="switchTab('impact')">影响分析 / 批量升级</div>
+          </div>
+
+          <!-- 内容编辑 -->
+          <div class="pane active" id="pane-content">
+            <p class="muted" style="font-size:12.5px">下方编辑的是<strong>下一个新版本</strong>的草稿；已发布版本内容不可变。引用其它资产时可选择「跟随最新版」或「锁定指定版本」。</p>
+            <div class="step-btns">
+              <button class="btn secondary" onclick="addStep('request')">+ 请求</button>
+              <button class="btn secondary" onclick="addStep('assert')">+ 断言</button>
+              <button class="btn secondary" onclick="addStep('set')">+ 赋值</button>
+              <button class="btn secondary" onclick="addStep('script')">+ 脚本</button>
+              <button class="btn secondary" onclick="addStep('sleep')">+ 等待</button>
+              <button class="btn secondary" onclick="addRef()">+ 引用资产</button>
+            </div>
+            <div id="step-list"></div>
+            <div class="mt"><label>版本说明</label>
+              <input type="text" id="change-note" placeholder="本次版本改了什么（如：登录接口升级到 v2）"></div>
+          </div>
+
+          <!-- 版本历史 -->
+          <div class="pane" id="pane-versions">
+            <div id="version-list"></div>
+          </div>
+
+          <!-- 预览 -->
+          <div class="pane" id="pane-preview">
+            <div class="row">
+              <label style="margin:0 6px 0 0;align-self:center">环境</label>
+              <select id="preview-env" style="max-width:260px" onchange="renderPreview()"></select>
+              <select id="preview-version" style="max-width:140px" onchange="renderPreview()"></select>
+            </div>
+            <div class="mt" id="preview-vars"></div>
+            <div class="preview-steps mt" id="preview-steps">选择环境后预览展开结果。</div>
+          </div>
+
+          <!-- 影响分析 -->
+          <div class="pane" id="pane-impact">
+            <div class="row">
+              <button class="btn secondary small" onclick="loadImpact()">刷新影响分析</button>
+              <span class="muted" id="impact-summary" style="font-size:12.5px"></span>
+            </div>
+            <h3 class="mt">受影响的资产</h3>
+            <div id="impact-assets" class="muted" style="font-size:13px"></div>
+            <h3 class="mt">受影响的用例</h3>
+            <div style="max-height:240px;overflow:auto">
+              <table class="impact-table" style="width:100%;border-collapse:collapse">
+                <thead><tr><th style="text-align:left">用例</th><th>优先级</th><th>引用方式</th><th>状态</th></tr></thead>
+                <tbody id="impact-cases"></tbody>
+              </table>
+            </div>
+            <h3 class="mt">受影响的套件</h3>
+            <div id="impact-suites" class="muted" style="font-size:13px"></div>
+            <h3 class="mt">批量处理</h3>
+            <div class="row">
+              <button class="btn small" onclick="batchUpgrade('upgrade')">把锁定旧版的引用批量升级到最新</button>
+              <button class="btn secondary small" onclick="batchUpgrade('lock')">全部锁定到最新版（钉版）</button>
+              <button class="btn secondary small" onclick="batchUpgrade('follow')">全部改为跟随最新版</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+</div>
+
+<script src="/static/js/common.js"></script>
+<script>
+renderNav("assets");
+
+const ASSERT_TYPES = ["equals","not_equals","contains","regex","gt","gte","lt","lte","between","in","status","truthy","json_path"];
+const CAT_LABELS = { step: "操作步骤", assertion: "断言片段", variables: "变量模板" };
+let projectId = null;
+let assets = [];
+let allAssets = [];          // 引用选择器用（全量）
+let currentId = null;
+let currentFamily = null;
+let versions = [];
+let steps = [];
+let creating = false;
+
+// ---------- 初始化 ----------
+async function init() {
+  const params = new URLSearchParams(location.search);
+  projectId = await fillProjectSelect($("#project-select"), params.get("project_id"));
+  await loadAssets();
+  await loadEnvOptions();
+}
+
+async function switchProject(id) {
+  projectId = id; currentId = null; currentFamily = null;
+  await loadAssets(); await loadEnvOptions(); resetDetail();
+}
+
+async function loadAssets() {
+  if (!projectId) return;
+  const q = encodeURIComponent($("#q").value || "");
+  const cat = encodeURIComponent($("#category-filter").value || "");
+  const tag = encodeURIComponent($("#tag-filter").value || "");
+  const d = await api(`/api/projects/${projectId}/assets?q=${q}&category=${cat}&tag=${tag}`);
+  assets = d.assets || [];
+  allAssets = assets; // 同项目内引用
+  $("#asset-count").textContent = `（${assets.length}）`;
+  const host = $("#asset-list");
+  if (!assets.length) { host.innerHTML = '<div class="empty">暂无资产</div>'; return; }
+  host.innerHTML = assets.map(a => `
+    <div class="asset-item ${a.id === currentId ? 'active' : ''}" onclick="loadAsset('${a.id}')">
+      <div class="aname">
+        <span class="badge cat-${a.category}">${CAT_LABELS[a.category] || a.category}</span>
+        ${esc(a.name)} <span class="muted" style="font-weight:400;font-size:12px">v${a.latest_version}</span>
+      </div>
+      <div class="ameta">${tagsHtml(a.tags)}
+        <span style="margin-left:6px">${(a.latest && a.latest.step_count) || 0} 步 · 被引用 ${a.usage_count || 0} 次</span>
+      </div>
+    </div>`).join("");
+}
+
+async function loadEnvOptions() {
+  if (!projectId) return;
+  const d = await api(`/api/projects/${projectId}/environments`);
+  const envs = d.environments || [];
+  $("#preview-env").innerHTML = '<option value="">不使用环境变量</option>' +
+    envs.map(e => `<option value="${e.id}">${esc(e.name)}</option>`).join("");
+}
+
+function resetDetail() {
+  creating = false; currentId = null; currentFamily = null; steps = [];
+  $("#detail-empty").style.display = "block";
+  $("#detail-body").style.display = "none";
+  $("#detail-actions").style.display = "none";
+  switchTab("content");
+}
+
+$("#btn-new").onclick = () => {
+  creating = true; currentId = null; currentFamily = null; steps = [];
+  $("#detail-empty").style.display = "none";
+  $("#detail-body").style.display = "block";
+  $("#detail-actions").style.display = "flex";
+  $("#editor-title").textContent = "新建资产";
+  $("#a-name").value = ""; $("#a-desc").value = "";
+  $("#a-category").value = "step"; $("#a-tags").value = "";
+  $("#a-latest").value = "—（保存后生成 v1）";
+  $("#change-note").value = "初始版本";
+  $("#btn-publish").textContent = "创建";
+  $("#btn-delete").style.display = "none";
+  $("#btn-save-meta").style.display = "none";
+  switchTab("content"); renderSteps();
+};
+
+async function loadAsset(id) {
+  creating = false; currentId = id;
+  currentFamily = await api(`/api/assets/${id}`);
+  versions = currentFamily.versions || [];
+  const latest = versions.find(v => v.version === currentFamily.latest_version) || versions[0];
+  $("#detail-empty").style.display = "none";
+  $("#detail-body").style.display = "block";
+  $("#detail-actions").style.display = "flex";
+  $("#editor-title").textContent = "资产详情";
+  $("#a-name").value = currentFamily.name || "";
+  $("#a-desc").value = currentFamily.description || "";
+  $("#a-category").value = currentFamily.category || "step";
+  $("#a-tags").value = (currentFamily.tags || []).join(", ");
+  $("#a-latest").value = "v" + currentFamily.latest_version;
+  $("#btn-publish").textContent = "发布新版本";
+  $("#btn-delete").style.display = "inline-flex";
+  $("#btn-save-meta").style.display = "inline-flex";
+  steps = (latest.steps || []).map(s => ({ ...s }));
+  $("#change-note").value = "";
+  renderSteps(); renderVersions(); renderVersionOptions();
+  switchTab("content");
+  loadAssets();
+}
+
+// ---------- Tab ----------
+function switchTab(name) {
+  $$("#detail-tabs .tab").forEach(t => t.classList.toggle("active", t.dataset.pane === name));
+  $$(".pane").forEach(p => p.classList.toggle("active", p.id === "pane-" + name));
+  if (name === "impact") loadImpact();
+  if (name === "preview") renderPreview();
+  if (name === "versions") renderVersions();
+}
+
+// ---------- 步骤编辑 ----------
+function addStep(action) {
+  const base = { action, name: action };
+  if (action === "request") Object.assign(base, { method: "GET", url: "/api/health", save_as: "resp" });
+  if (action === "assert") Object.assign(base, { type: "equals", actual: "${resp.status}", expected: "200" });
+  if (action === "set") Object.assign(base, { key: "var", value: "1" });
+  if (action === "script") Object.assign(base, { expr: "1 + 1", save_as: "result" });
+  if (action === "sleep") Object.assign(base, { seconds: "0.1" });
+  steps.push(base); renderSteps();
+}
+
+function addRef() {
+  if (!allAssets.length) return toast("当前项目还没有可引用的资产", "error");
+  const target = allAssets.find(a => a.id !== currentId) || allAssets[0];
+  steps.push({ action: "use_asset", name: "引用：" + target.name,
+    asset_id: target.id, version: target.latest_version, pin: "follow" });
+  renderSteps();
+}
+
+function stepField(i, key, value) { steps[i][key] = value; }
+function removeStep(i) { steps.splice(i, 1); renderSteps(); }
+function moveStep(i, dir) {
+  const j = i + dir; if (j < 0 || j >= steps.length) return;
+  [steps[i], steps[j]] = [steps[j], steps[i]]; renderSteps();
+}
+function stepType(i, action) {
+  const name = steps[i].name;
+  steps[i] = { action, name };
+  if (action === "request") Object.assign(steps[i], { method: "GET", url: "/api/health", save_as: "resp" });
+  if (action === "assert") Object.assign(steps[i], { type: "equals", actual: "${resp.status}", expected: "200" });
+  if (action === "set") Object.assign(steps[i], { key: "var", value: "1" });
+  if (action === "script") Object.assign(steps[i], { expr: "1 + 1", save_as: "result" });
+  if (action === "sleep") Object.assign(steps[i], { seconds: "0.1" });
+  renderSteps();
+}
+
+function refHTML(i, s) {
+  const target = allAssets.find(a => a.id === s.asset_id);
+  const opts = allAssets.map(a => `<option value="${a.id}" ${a.id===s.asset_id?"selected":""}>${esc(a.name)} (v${a.latest_version})</option>`).join("");
+  const ver = target ? target.latest_version : 1;
+  return `
+    <div class="se-head">
+      <span class="badge" style="background:#ede9fe;color:#5b21b6">引用资产</span>
+      <input type="text" value="${esc(s.name||"")}" placeholder="引用名称" oninput="stepField(${i},'name',this.value)" style="max-width:170px">
+      <select onchange="onRefAsset(${i},this.value)" style="max-width:200px">${opts}</select>
+      <label style="margin:0;font-weight:400">
+        <input type="radio" name="pin-${i}" value="follow" ${s.pin!=="lock"?"checked":""} onchange="stepField(${i},'pin','follow')"> 跟随最新版</label>
+      <label style="margin:0;font-weight:400">
+        <input type="radio" name="pin-${i}" value="lock" ${s.pin==="lock"?"checked":""} onchange="onRefLock(${i})"> 锁定</label>
+      <input type="number" value="${s.version||ver}" min="1" style="max-width:80px"
+        oninput="stepField(${i},'version',parseInt(this.value||'1',10))" ${s.pin!=="lock"?"disabled":""}>
+      <span style="flex:1"></span>
+      <button class="btn secondary small" onclick="moveStep(${i},-1)">↑</button>
+      <button class="btn secondary small" onclick="moveStep(${i},1)">↓</button>
+      <button class="btn danger small" onclick="removeStep(${i})">删除</button>
+    </div>`;
+}
+
+function onRefAsset(i, aid) {
+  const t = allAssets.find(a => a.id === aid);
+  steps[i].asset_id = aid;
+  if (t) { steps[i].version = t.latest_version; steps[i].name = "引用：" + t.name; }
+  renderSteps();
+}
+function onRefLock(i) {
+  steps[i].pin = "lock";
+  const t = allAssets.find(a => a.id === steps[i].asset_id);
+  steps[i].version = steps[i].version || (t ? t.latest_version : 1);
+  renderSteps();
+}
+
+function stepHTML(i, s) {
+  if (s.action === "use_asset") return `<div class="step-editor">${refHTML(i, s)}</div>`;
+  const a = s.action;
+  const head = `
+    <div class="se-head">
+      <span class="badge ${a}">${a}</span>
+      <input type="text" value="${esc(s.name || a)}" placeholder="步骤名称"
+        oninput="stepField(${i},'name',this.value)" style="max-width:170px">
+      <select onchange="stepType(${i}, this.value)" style="max-width:110px">
+        ${["request","assert","set","script","sleep"].map(t => `<option ${t===a?"selected":""}>${t}</option>`).join("")}
+      </select>
+      <span style="flex:1"></span>
+      <button class="btn secondary small" onclick="moveStep(${i},-1)">↑</button>
+      <button class="btn secondary small" onclick="moveStep(${i},1)">↓</button>
+      <button class="btn danger small" onclick="removeStep(${i})">删除</button>
+    </div>`;
+  let body = "";
+  if (a === "request") body = `
+    <div class="se-grid">
+      <div><label>方法</label><select onchange="stepField(${i},'method',this.value)">
+        ${["GET","POST","PUT","DELETE"].map(m => `<option ${m===s.method?"selected":""}>${m}</option>`).join("")}</select></div>
+      <div><label>URL（可用 ${ "${"}{BASE_URL}"}）</label><input type="text" value="${esc(s.url||"")}" oninput="stepField(${i},'url',this.value)"></div>
+      <div><label>保存为变量</label><input type="text" value="${esc(s.save_as||"resp")}" oninput="stepField(${i},'save_as',this.value)"></div>
+    </div>`;
+  else if (a === "assert") body = `
+    <div class="se-grid">
+      <div><label>断言类型</label><select onchange="stepField(${i},'type',this.value)">
+        ${ASSERT_TYPES.map(t => `<option ${t===s.type?"selected":""}>${t}</option>`).join("")}</select></div>
+      <div><label>实际值</label><input type="text" value="${esc(s.actual||"")}" oninput="stepField(${i},'actual',this.value)"></div>
+      <div><label>期望值</label><input type="text" value="${esc(s.expected||"")}" oninput="stepField(${i},'expected',this.value)"></div>
+    </div>`;
+  else if (a === "set") body = `
+    <div class="se-grid">
+      <div><label>变量名</label><input type="text" value="${esc(s.key||"")}" oninput="stepField(${i},'key',this.value)"></div>
+      <div style="grid-column:span 2"><label>值（可用 ${ "${"}{ENV_VAR}"} 引用环境变量）</label>
+        <input type="text" value="${esc(s.value==null?"":s.value)}" oninput="stepField(${i},'value',this.value)"></div>
+    </div>`;
+  else if (a === "script") body = `
+    <div class="se-grid">
+      <div style="grid-column:span 2"><label>表达式</label><input type="text" value="${esc(s.expr||"")}" oninput="stepField(${i},'expr',this.value)"></div>
+      <div><label>保存为变量</label><input type="text" value="${esc(s.save_as||"")}" oninput="stepField(${i},'save_as',this.value)"></div>
+    </div>`;
+  else if (a === "sleep") body = `
+    <div class="se-grid"><div><label>秒数</label><input type="text" value="${esc(s.seconds||"")}" oninput="stepField(${i},'seconds',this.value)"></div></div>`;
+  return `<div class="step-editor">${head}${body}</div>`;
+}
+
+function renderSteps() {
+  const host = $("#step-list");
+  if (!steps.length) { host.innerHTML = '<div class="muted">还没有步骤。可用「+ 引用资产」复用其它资产，支持多层引用。</div>'; return; }
+  host.innerHTML = steps.map((s, i) => stepHTML(i, s)).join("");
+}
+
+// ---------- 版本 ----------
+function renderVersions() {
+  if (!versions.length) { $("#version-list").innerHTML = '<div class="muted">暂无版本</div>'; return; }
+  $("#version-list").innerHTML = versions.map(v => `
+    <div class="ver-item" onclick='showVersionSteps(${JSON.stringify(v.version)})'>
+      <span class="ver-no">v${v.version}</span>
+      ${v.version === currentFamily.latest_version ? '<span class="ver-latest">最新</span>' : ""}
+      <span>${esc(v.change_note || "（无说明）")}</span>
+      <span style="flex:1"></span>
+      <span class="muted">${v.step_count} 步 · ${fmtTime(v.created_at)}</span>
+      ${v.refs && v.refs.length ? `<span class="pin-lock" style="font-weight:400">引用 ${v.refs.length} 条资产</span>` : ""}
+    </div>`).join("");
+}
+
+function showVersionSteps(no) {
+  const v = versions.find(x => x.version === no);
+  if (!v) return;
+  const text = v.steps.map((s, i) => `${i + 1}. [${s.action}] ${s.name || ""}` +
+    (s.action === "use_asset" ? ` → ${s.asset_id} ${s.pin === "lock" ? "锁定v" + s.version : "(跟随最新)"}` : "")).join("\n");
+  toast(`v${no} 共 ${v.steps.length} 步`, "ok");
+  switchTab("preview");
+  $("#preview-version").value = String(no);
+  renderPreview();
+}
+
+function renderVersionOptions() {
+  $("#preview-version").innerHTML = versions
+    .map(v => `<option value="${v.version}" ${v.version===currentFamily.latest_version?"selected":""}>v${v.version}</option>`).join("");
+}
+
+// ---------- 预览 ----------
+async function renderPreview() {
+  if (!currentId) return;
+  const envId = $("#preview-env").value;
+  const ver = $("#preview-version").value || "";
+  try {
+    const d = await api(`/api/assets/${currentId}/preview?env_id=${encodeURIComponent(envId)}&version=${encodeURIComponent(ver)}`);
+    $("#preview-vars").innerHTML = (d.variables || []).map(v => {
+      const label = { environment: "环境", asset_default: "资产默认", undefined: "未定义" }[v.source];
+      return `<span class="var-chip"><strong>${esc(v.name)}</strong>
+        <span class="src-${v.source}">${label}: ${v.value == null ? "—" : esc(JSON.stringify(v.value))}</span></span>`;
+    }).join("") || '<span class="muted" style="font-size:12px">无输入变量</span>';
+    $("#preview-steps").innerHTML = (d.steps || []).map((s, i) => {
+      const detail = stepSummary(s);
+      const src = s._asset_path ? ` <span class="pv-asset">└ 来自 ${esc(s._asset_path)}</span>` : "";
+      return `<div class="pv-step">${i + 1}. [${esc(s.action)}] ${esc(s.name || "")} ${esc(detail)}${src}</div>`;
+    }).join("");
+  } catch (e) {
+    $("#preview-steps").textContent = "预览失败：" + e.message;
+  }
+}
+
+function stepSummary(s) {
+  if (s.action === "request") return `${s.method || "GET"} ${s.url || ""}`;
+  if (s.action === "assert") return `${s.actual || ""} ${s.type || "equals"} ${s.expected == null ? "" : JSON.stringify(s.expected)}`;
+  if (s.action === "set") return `${s.key} = ${s.value == null ? "" : JSON.stringify(s.value)}`;
+  if (s.action === "script") return s.expr || "";
+  if (s.action === "sleep") return `${s.seconds}s`;
+  return "";
+}
+
+// ---------- 影响分析 ----------
+async function loadImpact() {
+  if (!currentId) return;
+  const d = await api(`/api/assets/${currentId}/impact`);
+  $("#impact-summary").innerHTML =
+    `共影响 <strong>${(d.cases||[]).length}</strong> 条用例、<strong>${(d.suites||[]).length}</strong> 个套件；` +
+    `<span class="pin-follow">跟随最新 ${d.outdated_case_count}</span> · ` +
+    `<span class="pin-lock">锁定旧版可升级 ${d.stale_case_count}</span>`;
+  $("#impact-assets").innerHTML = (d.assets || []).length
+    ? d.assets.map(a => `<div>· ${esc(a.name)} v${a.latest_version}
+        <span class="tag">${CAT_LABELS[a.category]||a.category}</span>
+        ${a.outdated ? '<span class="pin-follow">最新版会变</span>' : '<span class="pin-lock">仅旧版本受影响</span>'}
+        <span class="muted">脏版本: ${(a.dirty_versions||[]).join(", ")}</span></div>`).join("")
+    : "无上游 / 下游资产受影响。";
+  $("#impact-cases").innerHTML = (d.cases || []).map(c => `
+    <tr>
+      <td>${esc(c.name || c.case_id)}</td>
+      <td style="text-align:center">${c.priority||""}</td>
+      <td style="text-align:center">${c.pins.map(p => p === "follow"
+        ? '<span class="pin-follow">跟随</span>' : '<span class="pin-lock">锁定</span>').join(" / ")}</td>
+      <td style="text-align:center">${c.outdated
+        ? '<span class="pin-follow">将自动跟随新版</span>'
+        : (c.stale ? '<span class="pin-lock">锁定旧版 · 可升级</span>' : '<span class="muted">不受影响</span>')}</td>
+    </tr>`).join("") || '<tr><td colspan="4" class="muted">无引用用例</td></tr>';
+  $("#impact-suites").innerHTML = (d.suites || []).length
+    ? d.suites.map(s => `· ${esc(s.name)}（${s.case_count} 条受影响用例）`).join("<br>")
+    : "无套件受影响。";
+}
+
+async function batchUpgrade(scope) {
+  const labels = { upgrade: "确认把所有锁定旧版的引用批量升级到最新版本？",
+    lock: "确认把全部引用锁定到当前最新版本（之后不再自动跟随）？",
+    follow: "确认把全部引用改为跟随最新版？" };
+  if (!confirm(labels[scope])) return;
+  const r = await api(`/api/assets/${currentId}/batch-upgrade`, {
+    method: "POST", body: { scope, project_id: projectId } });
+  toast(`已更新 ${r.changed_case_count} 条用例、${r.changed_asset_count} 条资产`);
+  await loadAsset(currentId);
+  await loadImpact();
+}
+
+// ---------- 保存 / 发布 / 删除 ----------
+function readMeta() {
+  return {
+    name: $("#a-name").value.trim(),
+    description: $("#a-desc").value,
+    category: $("#a-category").value,
+    tags: ($("#a-tags").value || "").split(",").map(t => t.trim()).filter(Boolean),
+  };
+}
+function serializeSteps() {
+  return steps.map(s => {
+    if (s.action === "use_asset") {
+      return { action: "use_asset", name: s.name || "引用资产",
+        asset_id: s.asset_id, pin: s.pin || "follow",
+        version: parseInt(s.version || "1", 10) };
+    }
+    const out = { action: s.action, name: s.name || s.action };
+    if (s.action === "request") Object.assign(out, { method: s.method, url: s.url || "/",
+      save_as: s.save_as || "resp", params: parseLiteral(s.params || ""), body: parseLiteral(s.body || "") });
+    if (s.action === "assert") Object.assign(out, { type: s.type || "equals",
+      actual: parseLiteral(s.actual ?? ""), expected: parseLiteral(s.expected ?? "") });
+    if (s.action === "set") Object.assign(out, { key: s.key || "var", value: parseLiteral(s.value ?? "") });
+    if (s.action === "script") Object.assign(out, { expr: s.expr || "", save_as: s.save_as || "" });
+    if (s.action === "sleep") Object.assign(out, { seconds: parseFloat(s.seconds || "0.1") });
+    return out;
+  });
+}
+
+$("#btn-save-meta").onclick = async () => {
+  const body = readMeta();
+  if (!body.name) return toast("请输入资产名称", "error");
+  await api(`/api/assets/${currentId}`, { method: "PUT", body });
+  toast("元信息已保存"); loadAssets();
+};
+
+$("#btn-publish").onclick = async () => {
+  const meta = readMeta();
+  if (!meta.name) return toast("请输入资产名称", "error");
+  const payload = { ...meta, steps: serializeSteps(), change_note: $("#change-note").value };
+  try {
+    if (creating) {
+      const fam = await api(`/api/projects/${projectId}/assets`, { method: "POST", body: payload });
+      toast("已创建 v1");
+      await loadAssets(); await loadAsset(fam.id);
+    } else {
+      await api(`/api/assets/${currentId}/versions`, { method: "POST", body: payload });
+      toast("新版本已发布"); await loadAsset(currentId);
+    }
+  } catch (e) { toast(e.message, "error"); }
+};
+
+$("#btn-delete").onclick = async () => {
+  if (!currentId) return;
+  if (!confirm("删除资产及其全部版本？引用它的用例执行时会报「资产不存在」。")) return;
+  await api(`/api/assets/${currentId}`, { method: "DELETE" });
+  toast("已删除"); resetDetail(); loadAssets();
+};
+
+init();
+</script>
+</body>
+</html>

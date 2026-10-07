@@ -17,6 +17,8 @@
     .step-btns .btn { font-size: 12px; padding: 5px 11px; }
     .run-out { white-space: pre-wrap; font-family: var(--mono); font-size: 12.5px; background: var(--surface-2);
       border-radius: 8px; padding: 12px; max-height: 340px; overflow: auto; }
+    .pin-follow { color: var(--green); font-weight: 600; }
+    .pin-lock { color: var(--amber); font-weight: 600; }
   </style>
 </head>
 <body>
@@ -85,6 +87,8 @@
             <button class="btn secondary" onclick="addStep('set')">+ 赋值</button>
             <button class="btn secondary" onclick="addStep('script')">+ 脚本</button>
             <button class="btn secondary" onclick="addStep('sleep')">+ 等待</button>
+            <button class="btn secondary" onclick="addRefStep()">+ 引用资产</button>
+            <button class="btn secondary" onclick="previewExpanded()">按环境预览展开</button>
           </div>
           <div id="step-list"><div class="muted">还没有步骤，从上方添加。</div></div>
         </div>
@@ -107,6 +111,7 @@ let projectId = null;
 let cases = [];
 let currentId = null;
 let steps = [];
+let assetOptions = [];
 
 // ---------- 项目 ----------
 async function init() {
@@ -134,6 +139,11 @@ async function loadCases() {
   const pr = encodeURIComponent($("#priority-filter").value || "");
   const d = await api(`/api/projects/${projectId}/cases?q=${q}&tag=${tag}&priority=${pr}`);
   cases = d.cases || [];
+  // 顺带拉资产列表，供「引用资产」选择
+  try {
+    const ad = await api(`/api/projects/${projectId}/assets`);
+    assetOptions = ad.assets || [];
+  } catch (_) { assetOptions = []; }
   $("#case-count").textContent = `（${cases.length}）`;
   const host = $("#case-list");
   if (!cases.length) { host.innerHTML = '<div class="empty">暂无用例</div>'; return; }
@@ -204,7 +214,89 @@ function moveStep(i, dir) {
   renderSteps();
 }
 
+// ---------- 引用资产 ----------
+function addRefStep() {
+  if (!assetOptions.length) return toast("当前项目还没有资产，请到「资产库」创建", "error");
+  const a = assetOptions[0];
+  steps.push({ action: "use_asset", name: "引用：" + a.name,
+    asset_id: a.id, version: a.latest_version, pin: "follow" });
+  renderSteps();
+}
+function onRefAsset(i, aid) {
+  const t = assetOptions.find(a => a.id === aid);
+  steps[i].asset_id = aid;
+  if (t) { steps[i].version = t.latest_version; steps[i].name = "引用：" + t.name; }
+  renderSteps();
+}
+function onRefLock(i, locked) {
+  steps[i].pin = locked ? "lock" : "follow";
+  if (locked) {
+    const t = assetOptions.find(a => a.id === steps[i].asset_id);
+    steps[i].version = steps[i].version || (t ? t.latest_version : 1);
+  }
+  renderSteps();
+}
+
+function refStepHTML(i, s) {
+  const opts = assetOptions.map(a => `<option value="${a.id}" ${a.id===s.asset_id?"selected":""}>${esc(a.name)} (v${a.latest_version})</option>`).join("");
+  const t = assetOptions.find(a => a.id === s.asset_id);
+  const ver = t ? t.latest_version : 1;
+  return `
+    <div class="step-editor">
+      <div class="se-head">
+        <span class="badge" style="background:#ede9fe;color:#5b21b6">引用资产</span>
+        <input type="text" value="${esc(s.name||"")}" oninput="stepField(${i},'name',this.value)" style="max-width:160px">
+        <select onchange="onRefAsset(${i},this.value)" style="max-width:200px">${opts}</select>
+        <label style="margin:0;font-weight:400"><input type="radio" name="rpin-${i}" ${s.pin!=="lock"?"checked":""}
+          onchange="onRefLock(${i},false)"> 跟随最新版</label>
+        <label style="margin:0;font-weight:400"><input type="radio" name="rpin-${i}" ${s.pin==="lock"?"checked":""}
+          onchange="onRefLock(${i},true)"> 锁定</label>
+        <input type="number" min="1" value="${s.version||ver}" style="max-width:75px"
+          ${s.pin!=="lock"?"disabled":""} oninput="stepField(${i},'version',parseInt(this.value||'1',10))">
+        <span style="flex:1"></span>
+        <button class="btn secondary small" onclick="moveStep(${i},-1)">↑</button>
+        <button class="btn secondary small" onclick="moveStep(${i},1)">↓</button>
+        <button class="btn danger small" onclick="removeStep(${i})">删除</button>
+      </div>
+    </div>`;
+}
+
+async function previewExpanded() {
+  // 保存当前编辑到后端（临时或更新），调用预览接口，展示完整展开 + 变量来源
+  const body = readEditor();
+  if (!body.name) return toast("请先填写用例名称", "error");
+  try {
+    let id = currentId;
+    if (!id) {
+      const r = await api(`/api/projects/${projectId}/cases`, { method: "POST", body });
+      id = r.id;
+    } else {
+      await api(`/api/cases/${id}`, { method: "PUT", body });
+    }
+    const envs = await (await fetch(`/api/projects/${projectId}/environments`)).json();
+    const envList = (envs.environments || []).map(e => `${e.id}|${e.name}`).join("\n");
+    const envId = prompt("输入要预览的环境 id（留空=不用环境变量）：\n" + (envList || "（无环境）"), "");
+    const d = await api(`/api/cases/${id}/preview`, { method: "POST", body: { env_id: envId || null } });
+    const vars = (d.variables || []).map(v => {
+      const tag = { environment: "环境", asset_default: "资产默认", undefined: "未定义" }[v.source];
+      return `${v.name} = ${v.value == null ? "—" : JSON.stringify(v.value)}（${tag}）`;
+    }).join("\n");
+    const text = (d.steps || []).map((s, i) => {
+      let detail = s.action === "request" ? `${s.method||"GET"} ${s.url||""}`
+        : s.action === "assert" ? `${s.actual||""} ${s.type||""} ${s.expected==null?"":JSON.stringify(s.expected)}`
+        : s.action === "set" ? `${s.key}=${s.value==null?"":JSON.stringify(s.value)}` : "";
+      const src = s._asset_path ? `  ← 来自 ${s._asset_path}` : "";
+      return `${i+1}. [${s.action}] ${s.name||""} ${detail}${src}`;
+    }).join("\n");
+    $("#run-out").textContent =
+      `展开后共 ${d.step_count} 步\n—— 变量来源 ——\n${vars || "无输入变量"}\n—— 步骤 ——\n${text}`;
+    if (!currentId) { await api(`/api/cases/${id}`, { method: "DELETE" }); }
+    loadCases();
+  } catch (e) { toast(e.message, "error"); }
+}
+
 function stepHTML(i, s) {
+  if (s.action === "use_asset") return refStepHTML(i, s);
   const a = s.action;
   const head = `
     <div class="se-head">
@@ -212,7 +304,7 @@ function stepHTML(i, s) {
       <input type="text" value="${esc(s.name || a)}" placeholder="步骤名称"
         oninput="stepField(${i},'name',this.value)" style="max-width:180px">
       <select onchange="stepType(${i}, this.value)" style="max-width:120px">
-        ${["request","assert","set","script","sleep","skip"].map(t => `<option ${t===a?"selected":""}>${t}</option>`).join("")}
+        ${["request","assert","set","script","sleep","skip","use_asset"].map(t => `<option ${t===a?"selected":""}>${t === "use_asset" ? "use_asset（引用）" : t}</option>`).join("")}
       </select>
       <span style="flex:1"></span>
       <button class="btn secondary small" onclick="moveStep(${i},-1)">↑</button>
@@ -263,6 +355,11 @@ function renderSteps() {
 // ---------- 序列化 / 保存 ----------
 function serializeSteps() {
   return steps.map(s => {
+    if (s.action === "use_asset") {
+      return { action: "use_asset", name: s.name || "引用资产",
+        asset_id: s.asset_id, pin: s.pin || "follow",
+        version: parseInt(s.version || "1", 10) };
+    }
     const out = { action: s.action, name: s.name || s.action };
     if (s.action === "request") Object.assign(out, { method: s.method, url: s.url || "/",
       save_as: s.save_as || "resp", params: parseLiteral(s.params || ""), headers: parseLiteral(s.headers || ""), body: parseLiteral(s.body || "") });

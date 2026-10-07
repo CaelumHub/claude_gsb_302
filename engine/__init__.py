@@ -22,6 +22,7 @@ from .models import (
 )
 from .cron import CronSchedule, cron_matches, parse_cron
 from .executor import TestExecutor, ExecutionError
+from .assets import AssetLibrary, AssetError, ASSET_CATEGORIES, PIN_MODES
 from .environments import EnvironmentManager
 from .coverage import CoverageAnalyzer
 from .report import ReportGenerator
@@ -40,6 +41,10 @@ __all__ = [
     "parse_cron",
     "TestExecutor",
     "ExecutionError",
+    "AssetLibrary",
+    "AssetError",
+    "ASSET_CATEGORIES",
+    "PIN_MODES",
     "EnvironmentManager",
     "CoverageAnalyzer",
     "ReportGenerator",

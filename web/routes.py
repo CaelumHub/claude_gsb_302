@@ -16,6 +16,7 @@ from typing import Optional
 from flask import Blueprint, current_app, jsonify, request
 
 from engine import new_id
+from engine.assets import ASSET_CATEGORIES, PIN_MODES, USE_ASSET_ACTION, AssetError
 from engine.executor import TestExecutor
 
 api = Blueprint("api", __name__, url_prefix="/api")
@@ -55,6 +56,10 @@ def _defects():
 
 def _notify():
     return current_app.config["NOTIFY"]
+
+
+def _assets():
+    return current_app.config["ASSETS"]
 
 
 def _payload() -> dict:
@@ -242,7 +247,9 @@ def run_single_case(case_id: str):
         return _err("用例不存在", 404)
     data = _payload()
     env_config = _env_mgr().to_executor_config(data.get("env_id")) if data.get("env_id") else {}
-    result = TestExecutor().execute_case(case, env_config,
+    # 执行前把用例里的资产引用展开为完整步骤
+    expanded = _assets().expand_case(case)
+    result = TestExecutor(step_expander=None).execute_case(expanded, env_config,
                                          timeout=case.get("timeout", 60))
     return jsonify(result)
 
@@ -686,6 +693,143 @@ def test_integration(integration_id: str):
 @api.get("/projects/<project_id>/events")
 def list_events(project_id: str):
     return jsonify({"events": _notify().events(project_id)})
+
+
+# ---------------------------------------------------------------------------
+# 可复用资产库（版本化步骤 / 断言 / 变量模板）
+# ---------------------------------------------------------------------------
+
+def _asset_or_404(asset_id: str):
+    family = _assets().get_family(asset_id)
+    if family is None:
+        return None, _err("资产不存在", 404)
+    return family, None
+
+
+def _env_variables(env_id: Optional[str]) -> dict:
+    if not env_id:
+        return {}
+    env = _env_mgr().get(env_id)
+    return dict((env or {}).get("variables") or {})
+
+
+@api.get("/projects/<project_id>/assets")
+def list_assets(project_id: str):
+    families = _assets().list_families(
+        project_id,
+        q=request.args.get("q", ""),
+        category=request.args.get("category", ""),
+        tag=request.args.get("tag", ""),
+    )
+    return jsonify({"assets": families,
+                    "categories": ASSET_CATEGORIES,
+                    "pin_modes": PIN_MODES})
+
+
+@api.post("/projects/<project_id>/assets")
+def create_asset(project_id: str):
+    data = _payload()
+    try:
+        family = _assets().create_family(project_id, data)
+    except AssetError as exc:
+        return _err(str(exc))
+    return jsonify(family)
+
+
+@api.get("/assets/<asset_id>")
+def get_asset(asset_id: str):
+    family, err = _asset_or_404(asset_id)
+    if err:
+        return err
+    out = dict(family)
+    out["versions"] = _assets().list_versions(asset_id)
+    return jsonify(out)
+
+
+@api.put("/assets/<asset_id>")
+def update_asset_meta(asset_id: str):
+    _, err = _asset_or_404(asset_id)
+    if err:
+        return err
+    try:
+        return jsonify(_assets().update_family_meta(asset_id, _payload()))
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.delete("/assets/<asset_id>")
+def delete_asset(asset_id: str):
+    _assets().delete_family(asset_id)
+    return jsonify({"ok": True})
+
+
+@api.post("/assets/<asset_id>/versions")
+def publish_asset_version(asset_id: str):
+    _, err = _asset_or_404(asset_id)
+    if err:
+        return err
+    try:
+        return jsonify(_assets().publish_version(asset_id, _payload()))
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.get("/assets/<asset_id>/versions/<int:version>")
+def get_asset_version(asset_id: str, version: int):
+    ver = _assets().get_version(asset_id, version)
+    if ver is None:
+        return _err("版本不存在", 404)
+    return jsonify(ver)
+
+
+@api.get("/assets/<asset_id>/impact")
+def asset_impact(asset_id: str):
+    _, err = _asset_or_404(asset_id)
+    if err:
+        return err
+    try:
+        return jsonify(_assets().impact_of(asset_id))
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.post("/assets/<asset_id>/batch-upgrade")
+def asset_batch_upgrade(asset_id: str):
+    _, err = _asset_or_404(asset_id)
+    if err:
+        return err
+    data = _payload()
+    try:
+        return jsonify(_assets().batch_upgrade(
+            asset_id, target_version=data.get("target_version"),
+            scope=data.get("scope", "upgrade"),
+            project_id=data.get("project_id")))
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.get("/assets/<asset_id>/preview")
+def preview_asset(asset_id: str):
+    version = request.args.get("version", type=int)
+    env_id = request.args.get("env_id")
+    try:
+        return jsonify(_assets().preview_asset(
+            asset_id, version=version, env_variables=_env_variables(env_id)))
+    except AssetError as exc:
+        return _err(str(exc))
+
+
+@api.post("/cases/<case_id>/preview")
+def preview_case(case_id: str):
+    case = _store("cases").get(case_id)
+    if case is None:
+        return _err("用例不存在", 404)
+    data = _payload()
+    try:
+        return jsonify(_assets().preview_case(
+            case, _env_variables(data.get("env_id"))))
+    except AssetError as exc:
+        return _err(str(exc))
 
 
 # ---------------------------------------------------------------------------

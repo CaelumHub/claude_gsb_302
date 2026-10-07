@@ -271,8 +271,11 @@ def evaluate_assertion(atype: str, actual: Any, expected: Any) -> tuple[bool, st
 class TestExecutor:
     """测试用例执行器。"""
 
-    def __init__(self):
+    def __init__(self, step_expander=None):
         self.target = MockTarget({})
+        # 可选的步骤预展开回调（用于执行前把 use_asset 引用内联展开）。
+        # 签名：expander(steps: list) -> list；不传则原样执行，保持向后兼容。
+        self.step_expander = step_expander
 
     # -- 单步骤执行 -------------------------------------------------------
     def _run_step(self, step: dict, variables: dict, case_id: str, idx: int,
@@ -382,6 +385,14 @@ class TestExecutor:
                                   "用例已禁用")
 
         steps = case.get("steps") or []
+        if self.step_expander is not None:
+            try:
+                steps = self.step_expander(steps)
+            except Exception as exc:  # noqa: BLE001
+                msg = f"资产引用展开失败: {exc}"
+                return self._finalize(
+                    case, "error", [], [], [f"开始执行用例 {case_name} (id={case_id})", msg],
+                    started, message=msg)
         for idx, step in enumerate(steps):
             if cancel_event is not None and cancel_event.is_set():
                 status = "error"
